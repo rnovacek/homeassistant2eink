@@ -1,0 +1,8 @@
+version: "3.9"
+
+services:
+  web:
+    build: .
+    ports:
+      - "18000:8000"
+    env_file: .env
