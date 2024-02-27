@@ -126,6 +126,12 @@ async def index(request: Request, state: State) -> Response:
         return Response(await get_screenshot(state), media_type='image/png')
     except Exception as e:
         logger.exception(e)
+        try:
+            stop_browser(state)
+        except Exception as err:
+            logger.error('Unable to stop browser: %s', err)
+
+        start_browser(state)
         return Response('Error', status_code=500, media_type='text/plain')
 
 settings = Settings()
