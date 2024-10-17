@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 
-from contextlib import asynccontextmanager
 import logging
 from typing import Any
-from playwright.async_api import async_playwright, Page
+from playwright.async_api import Playwright, async_playwright, Page
 from litestar import Litestar, get, Request, Response
 from litestar.datastructures import State
 from pydantic_settings import BaseSettings
@@ -22,44 +21,53 @@ VIEW_HEIGHT = 540
 
 class Settings(BaseSettings):
     headless: bool = True
-    token: str = ''
-    homeassistant_url: str = ''
-    homeassistant_username: str = ''
-    homeassistant_password: str = ''
+    token: str = ""
+    homeassistant_url: str = ""
+    homeassistant_username: str = ""
+    homeassistant_password: str = ""
 
     class Config:
         extra = "ignore"
-        env_file = '.env'
-        env_file_encoding = 'utf-8'
+        env_file = ".env"
+        env_file_encoding = "utf-8"
 
 
-@asynccontextmanager
-async def browser(state: State):
-    settings: Settings = state['settings']
+async def launch_browser(playwright: Playwright, state: State):
+    settings: Settings = state["settings"]
 
-    playwright = await async_playwright().start()
     chromium = playwright.chromium
     browser = await chromium.launch(headless=settings.headless)
-    context = await browser.new_context(viewport={ 'width': VIEW_WIDTH + SIDEBAR_WIDTH, 'height': VIEW_HEIGHT + HEADER_HEIGHT }, device_scale_factor=3, is_mobile=True)
-    context.set_default_timeout(5_000)
-    page = await context.new_page()
+    try:
+        context = await browser.new_context(
+            viewport={
+                "width": VIEW_WIDTH + SIDEBAR_WIDTH,
+                "height": VIEW_HEIGHT + HEADER_HEIGHT,
+            },
+            device_scale_factor=3,
+            is_mobile=True,
+        )
+        context.set_default_timeout(10_000)
+        page = await context.new_page()
+        return browser, page
+    except Exception as e:
+        await browser.close()
+        raise e
 
-    state['page'] = page
-    state['browser'] = browser
 
+async def handle_login(page: Page, state: State):
+    settings: Settings = state["settings"]
     _ = await page.goto(settings.homeassistant_url)
     _ = await page.wait_for_selector("ha-authorize")
     _ = await page.wait_for_selector(".action mwc-button")
 
     await page.type('[name="username"]', settings.homeassistant_username)
     await page.type('[name="password"]', settings.homeassistant_password)
-    await page.click('.action mwc-button')
+    await page.click(".action mwc-button")
 
     _ = await page.wait_for_selector("home-assistant-main #view")
 
-    yield page
-
-    await browser.close()
+    view = await page.wait_for_selector("home-assistant-main #view")
+    assert view
 
 
 async def handle_notification(page: Page):
@@ -87,35 +95,57 @@ async def handle_notification(page: Page):
 
 
 async def get_screenshot(state: State):
-    async with browser(state) as page:
-        view = await page.wait_for_selector("home-assistant-main #view")
-        assert view
+    async with async_playwright() as playwright:
+        try:
+            browser, page = await launch_browser(playwright, state)
+        except Exception as e:
+            logger.exception("Error launching browser: %s", e)
+            return None
 
-        await handle_notification(page)
+        try:
+            await handle_login(page, state)
+        except Exception as e:
+            logger.exception("Error handling login: %s", e)
+            await browser.close()
+            return None
 
-        image_data = await page.screenshot(
-            type="png",
-            animations="disabled",
-            clip={
-                "x": SIDEBAR_WIDTH,
-                "y": HEADER_HEIGHT,
-                "width": VIEW_WIDTH,
-                "height": VIEW_HEIGHT,
-            },
-            timeout=10_000,
-        )
-        image_bytes = BytesIO(image_data)
+        try:
+            await handle_notification(page)
+        except Exception as e:
+            logger.exception("Error handling notification: %s", e)
+            await browser.close()
+            return None
 
-        image = Image.open(image_bytes)
-        new_image = (
-            image.resize(size=(VIEW_WIDTH, VIEW_HEIGHT))
-            .convert("L")
-            .rotate(90, expand=True)
-        )
-        _ = image_bytes.seek(0)
-        new_image.save(image_bytes, format="PNG", quality=80, optimize=True)
-        print("Image ready, size:", len(image_bytes.getvalue()))
-        return image_bytes.getvalue()
+        try:
+            image_data = await page.screenshot(
+                type="png",
+                animations="disabled",
+                clip={
+                    "x": SIDEBAR_WIDTH,
+                    "y": HEADER_HEIGHT,
+                    "width": VIEW_WIDTH,
+                    "height": VIEW_HEIGHT,
+                },
+                timeout=10_000,
+            )
+        except Exception as e:
+            logger.exception("Error taking screenshot: %s", e)
+            return None
+        finally:
+            await browser.close()
+
+    image_bytes = BytesIO(image_data)
+
+    image = Image.open(image_bytes)
+    new_image = (
+        image.resize(size=(VIEW_WIDTH, VIEW_HEIGHT))
+        .convert("L")
+        .rotate(90, expand=True)
+    )
+    _ = image_bytes.seek(0)
+    new_image.save(image_bytes, format="PNG", quality=80, optimize=True)
+    print("Image ready, size:", len(image_bytes.getvalue()))
+    return image_bytes.getvalue()
 
 
 @get("/")
