@@ -1,6 +1,6 @@
-playwright==1.32.1
-litestar==2.0.0a5
-pydantic[dotenv]==1.10.7
-uvicorn==0.21.1
-pillow==9.5.0
-
+playwright==1.47.0
+litestar==2.12.1
+pydantic[dotenv]==2.9.2
+pydantic-settings==2.5.2
+uvicorn==0.32.0
+pillow==11.0.0
